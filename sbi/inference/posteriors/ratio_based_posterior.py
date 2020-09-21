@@ -310,30 +310,7 @@ class PotentialFunctionProvider:
         self.prior = prior
         self.x = x
 
-        if mcmc_method in ("slice", "hmc", "nuts"):
-            return self.pyro_potential
-        else:
-            return self.np_potential
-
-    def np_potential(self, theta: np.array) -> ScalarFloat:
-        """Return potential for Numpy slice sampler."
-
-        Args:
-            theta: Parameters $\theta$, batch dimension 1.
-
-        Returns:
-            Posterior log probability of theta.
-        """
-        theta = torch.as_tensor(theta, dtype=torch.float32)
-
-        # Theta and x should have shape (1, dim).
-        theta = ensure_theta_batched(theta)
-        x = ensure_x_batched(self.x)
-
-        log_ratio = self.classifier(torch.cat((theta, x), dim=1).reshape(1, -1))
-
-        # Notice opposite sign to pyro potential.
-        return log_ratio + self.prior.log_prob(theta)
+        return self.pyro_potential
 
     def pyro_potential(self, theta: Dict[str, Tensor]) -> Tensor:
         r"""Return potential for Pyro sampler.

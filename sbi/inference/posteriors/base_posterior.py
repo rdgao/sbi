@@ -753,30 +753,7 @@ class ConditionalPotentialFunctionProvider:
         # Set prior, net, and x as attributes of unconditional potential_fn_provider.
         _ = self.potential_fn_provider.__call__(prior, net, x, mcmc_method)
 
-        if mcmc_method in ("slice", "hmc", "nuts"):
-            return self.pyro_potential
-        else:
-            return self.np_potential
-
-    def np_potential(self, theta: np.ndarray) -> ScalarFloat:
-        r"""
-        Return conditional posterior log-probability or $-\infty$ if outside prior.
-
-        Args:
-            theta: Free parameters $\theta_i$, batch dimension 1.
-
-        Returns:
-            Conditional posterior log-probability $\log(p(\theta_i|\theta_j, x))$,
-            masked outside of prior.
-        """
-        theta = torch.as_tensor(theta, dtype=torch.float32)
-
-        theta_condition = deepcopy(self.condition)
-        theta_condition[:, self.dims_to_sample] = theta
-
-        return self.potential_fn_provider.np_potential(
-            utils.tensor2numpy(theta_condition)
-        )
+        return self.pyro_potential
 
     def pyro_potential(self, theta: Dict[str, Tensor]) -> Tensor:
         r"""

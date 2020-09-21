@@ -264,27 +264,7 @@ class PotentialFunctionProvider:
         self.prior = prior
         self.x = x
 
-        if mcmc_method in ("slice", "hmc", "nuts"):
-            return self.pyro_potential
-        else:
-            return self.np_potential
-
-    def np_potential(self, theta: np.array) -> ScalarFloat:
-        r"""Return posterior log prob. of theta $p(\theta|x)$"
-
-        Args:
-            theta: Parameters $\theta$, batch dimension 1.
-
-        Returns:
-            Posterior log probability of the theta, $-\infty$ if impossible under prior.
-        """
-        theta = torch.as_tensor(theta, dtype=torch.float32)
-        log_likelihood = self.likelihood_nn.log_prob(
-            inputs=self.x.reshape(1, -1), context=theta.reshape(1, -1)
-        )
-
-        # Notice opposite sign to pyro potential.
-        return log_likelihood + self.prior.log_prob(theta)
+        return self.pyro_potential
 
     def pyro_potential(self, theta: Dict[str, Tensor]) -> Tensor:
         r"""Return posterior log probability of parameters $p(\theta|x)$.

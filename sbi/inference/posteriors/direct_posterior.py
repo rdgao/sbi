@@ -402,32 +402,7 @@ class PotentialFunctionProvider:
         self.prior = prior
         self.x = x
 
-        if mcmc_method in ("slice", "hmc", "nuts"):
-            return self.pyro_potential
-        else:
-            return self.np_potential
-
-    def np_potential(self, theta: np.ndarray) -> ScalarFloat:
-        r"""Return posterior theta log prob. $p(\theta|x)$, $-\infty$ if outside prior."
-
-        Args:
-            theta: Parameters $\theta$, batch dimension 1.
-
-        Returns:
-            Posterior log probability $\log(p(\theta|x))$.
-        """
-
-        theta = torch.as_tensor(theta, dtype=torch.float32)
-
-        is_within_prior = torch.isfinite(self.prior.log_prob(theta))
-        if is_within_prior:
-            target_log_prob = self.posterior_nn.log_prob(
-                inputs=theta.reshape(1, -1), context=self.x.reshape(1, -1),
-            )
-        else:
-            target_log_prob = -float("Inf")
-
-        return target_log_prob
+        return self.pyro_potential
 
     def pyro_potential(self, theta: Dict[str, Tensor]) -> Tensor:
         r"""Return posterior log prob. of theta $p(\theta|x)$, -inf where outside prior.
