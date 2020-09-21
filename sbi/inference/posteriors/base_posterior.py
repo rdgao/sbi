@@ -25,7 +25,7 @@ from torch import multiprocessing as mp
 from torch import nn
 
 from sbi import utils as utils
-from sbi.mcmc import Slice, SliceSampler, prior_init, sir
+from sbi.mcmc import Slice, SliceSampler, prior_init, sir_init
 from sbi.types import Array, Shape
 from sbi.user_input.user_input_checks import process_x
 from sbi.utils.torchutils import (
@@ -576,7 +576,7 @@ class NeuralPosterior(ABC):
         if init_strategy == "prior":
             return lambda: prior_init(prior)
         elif init_strategy == "sir":
-            return lambda: sir(prior, potential_fn, init_strategy_num_candidates,)
+            return lambda: sir_init(prior, potential_fn, init_strategy_num_candidates,)
         elif init_strategy == "latest_sample":
             return lambda: self._mcmc_init_params
         else:

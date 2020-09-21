@@ -11,7 +11,7 @@ def prior_init(prior: Any) -> Tensor:
     return prior.sample((1,)).detach()
 
 
-def sir(
+def sir_init(
     prior: Any, potential_fn: Callable, init_strategy_num_candidates: int,
 ) -> Tensor:
     r"""
