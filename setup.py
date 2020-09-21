@@ -34,6 +34,7 @@ REQUIRED = [
     "tensorboard",
     "torch>=1.5.1",
     "tqdm",
+    "zeus-mcmc"
 ]
 
 EXTRAS = {

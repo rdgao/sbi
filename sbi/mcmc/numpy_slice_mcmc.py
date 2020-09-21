@@ -61,34 +61,40 @@ class NumpySliceMCMC(MCMC):
     def run(self, num_samples: int) -> Dict[str, torch.Tensor]:
         assert num_samples >= 0
 
-        # Init chain
-        if self.x is None:
-            self.x = self._get_init_params()
-            self.n_dims = self.x.size  # TODO: double check
+        # TODO: Multiple chains
+        # TODO: Parallelization?
+        # TODO: Vectorisation?
 
-        order = list(range(self.n_dims))
-        samples = np.empty([int(num_samples), int(self.n_dims)])
+        with torch.set_grad_enabled(False):
 
-        if self.width is None:
-            self._tune_bracket_width(self.warmup)
+            # Init chain
+            if self.x is None:
+                self.x = self._get_init_params()
+                self.n_dims = self.x.size  # TODO: double check
 
-        if self.verbose:
-            tbar = trange(int(num_samples), miniters=10)
-            tbar.set_description("Generating samples")
-        else:
-            tbar = range(num_samples)
+            order = list(range(self.n_dims))
+            samples = np.empty([int(num_samples), int(self.n_dims)])
 
-        for n in tbar:
-            for _ in range(self.thin):
-                self.rng.shuffle(order)
-                for i in order:
-                    self.x[i], _ = self._sample_from_conditional(i, self.x[i])
+            if self.width is None:
+                self._tune_bracket_width(self.warmup)
 
-            samples[n] = self.x.copy()
+            if self.verbose:
+                tbar = trange(int(num_samples), miniters=10)
+                tbar.set_description("Generating samples")
+            else:
+                tbar = range(num_samples)
 
-            self.L = self._log_prob_fn(self.x)
+            for n in tbar:
+                for _ in range(self.thin):
+                    self.rng.shuffle(order)
+                    for i in order:
+                        self.x[i], _ = self._sample_from_conditional(i, self.x[i])
 
-        return {self.site_name: torch.from_numpy(samples.astype(np.float32))}
+                samples[n] = self.x.copy()
+
+                self.L = self._log_prob_fn(self.x)
+
+            return {self.site_name: torch.from_numpy(samples.astype(np.float32))}
 
     def _reset(self):
         self.rng = np.random
@@ -102,10 +108,12 @@ class NumpySliceMCMC(MCMC):
             * self.potential_fn(
                 {self.site_name: torch.from_numpy(x.astype(np.float32))}
             ).numpy()
-        )
+        )[0]
 
     def _get_init_params(self):
-        return self.init_fn(self.site_name).numpy()
+        # NOTE: Sampler only works with single chain at a time, reshaping
+        # init explicitly to -1
+        return self.init_fn(self.site_name).numpy().reshape(-1)
 
     def _tune_bracket_width(self, num_samples):
         """

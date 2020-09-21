@@ -31,7 +31,9 @@ from sbi.utils.torchutils import (
     batched_first_of_batch,
     ensure_theta_batched,
 )
-
+from sbi.utils.torchutils import (
+    ensure_x_batched,
+)
 
 class DirectPosterior(NeuralPosterior):
     r"""Posterior $p(\theta|x)$ with `log_prob()` and `sample()` methods, obtained with
@@ -55,8 +57,9 @@ class DirectPosterior(NeuralPosterior):
         neural_net: nn.Module,
         prior,
         x_shape: torch.Size,
-        sample_with_mcmc: bool = True,
-        mcmc_method: str = "slice_np",
+        sample_with_mcmc: bool = False,
+        mcmc_init: str = "prior",
+        mcmc_method: str = "slice",
         mcmc_parameters: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -65,29 +68,21 @@ class DirectPosterior(NeuralPosterior):
             neural_net: A classifier for SNRE, a density estimator for SNPE and SNL.
             prior: Prior distribution with `.log_prob()` and `.sample()`.
             x_shape: Shape of a single simulator output.
-            sample_with_mcmc: Whether to sample with MCMC. Will always be `True` for SRE
-                and SNL, but can also be set to `True` for SNPE if MCMC is preferred to
-                deal with leakage over rejection sampling.
-            mcmc_method: Method used for MCMC sampling, one of `slice_np`, `slice`,
-                `hmc`, `nuts`. Currently defaults to `slice_np` for a custom numpy
-                implementation of slice sampling; select `hmc`, `nuts` or `slice` for
-                Pyro-based sampling.
+            sample_with_mcmc: Whether to sample with MCMC. Can be set to `True` for
+                SNPE if MCMC is preferred to deal with leakage over rejection sampling.
+            mcmc_potential_builder: Callable that builds potential function. 
+            mcmc_init: Initialisation strategy to to for MCMC sampling.
+            mcmc_method: Method used for MCMC sampling.
             mcmc_parameters: Dictionary overriding the default parameters for MCMC.
-                The following parameters are supported: `thin` to set the thinning
-                factor for the chain, `warmup_steps` to set the initial number of
-                samples to discard, `num_chains` for the number of chains,
-                `init_strategy` for the initialisation strategy for chains; `prior`
-                will draw init locations from prior, whereas `sir` will use Sequential-
-                Importance-Resampling using `init_strategy_num_candidates` to find init
-                locations.
         """
 
         kwargs = del_entries(
             locals(), entries=("self", "__class__", "sample_with_mcmc")
         )
-        super().__init__(**kwargs)
+        super().__init__(mcmc_potential_builder=PotentialFunctionProvider(), **kwargs)
 
         self.set_sample_with_mcmc(sample_with_mcmc)
+
         self._purpose = (
             "It allows to .sample() and .log_prob() the posterior and wraps the "
             "output of the .net to avoid leakage into regions with 0 prior probability."
@@ -152,7 +147,6 @@ class DirectPosterior(NeuralPosterior):
             support of the prior, -∞ (corresponding to 0 probability) outside.
 
         """
-
         # TODO Train exited here, entered after sampling?
         self.net.eval()
 
@@ -238,6 +232,7 @@ class DirectPosterior(NeuralPosterior):
         x: Optional[Tensor] = None,
         show_progress_bars: bool = True,
         sample_with_mcmc: Optional[bool] = None,
+        mcmc_init: Optional[str] = None,
         mcmc_method: Optional[str] = None,
         mcmc_parameters: Optional[Dict[str, Any]] = None,
     ) -> Tensor:
@@ -256,127 +251,39 @@ class DirectPosterior(NeuralPosterior):
             x: Conditioning context for posterior $p(\theta|x)$. If not provided,
                 fall back onto `x_o` if previously provided for multiround training, or
                 to a set default (see `set_default_x()` method).
-            show_progress_bars: Whether to show sampling progress monitor.
             sample_with_mcmc: Optional parameter to override `self.sample_with_mcmc`.
+            mcmc_init: Optional parameter to override `self.mcmc_init`.
             mcmc_method: Optional parameter to override `self.mcmc_method`.
-            mcmc_parameters: Dictionary overriding the default parameters for MCMC.
-                The following parameters are supported: `thin` to set the thinning
-                factor for the chain, `warmup_steps` to set the initial number of
-                samples to discard, `num_chains` for the number of chains,
-                `init_strategy` for the initialisation strategy for chains; `prior`
-                will draw init locations from prior, whereas `sir` will use Sequential-
-                Importance-Resampling using `init_strategy_num_candidates` to find init
-                locations.
+            mcmc_parameters: Optional parameter to override `self.mcmc_parameters`.
 
         Returns:
             Samples from posterior.
         """
-
-        x, num_samples, mcmc_method, mcmc_parameters = self._prepare_for_sample(
-            x, sample_shape, mcmc_method, mcmc_parameters
-        )
-
         sample_with_mcmc = (
             sample_with_mcmc if sample_with_mcmc is not None else self.sample_with_mcmc
         )
+        if sample_with_mcmc:  # MCMC sampling
+            return super().sample(sample_shape=sample_shape, x=x, mcmc_init=mcmc_init, mcmc_method=mcmc_method, mcmc_parameters=mcmc_parameters)
 
-        self.net.eval()
+        else:  # Rejection sampling
+            self.net.eval()
 
-        if sample_with_mcmc:
-            potential_fn_provider = PotentialFunctionProvider()
-            samples = self._sample_posterior_mcmc(
-                num_samples=num_samples,
-                potential_fn=potential_fn_provider(
-                    self._prior, self.net, x, mcmc_method
-                ),
-                init_fn=self._build_mcmc_init_fn(
-                    self._prior,
-                    potential_fn_provider(self._prior, self.net, x, "slice_np"),
-                    **mcmc_parameters,
-                ),
-                mcmc_method=mcmc_method,
-                show_progress_bars=show_progress_bars,
-                **mcmc_parameters,
-            )
-        else:
-            # Rejection sampling.
             samples, _ = utils.sample_posterior_within_prior(
                 self.net,
                 self._prior,
                 x,
-                num_samples=num_samples,
-                show_progress_bars=show_progress_bars,
+                num_samples=num_samples
             )
 
-        self.net.train(True)
+            self.net.train(True)
 
-        return samples.reshape((*sample_shape, -1))
-
-    def sample_conditional(
-        self,
-        sample_shape: Shape,
-        condition: Tensor,
-        dims_to_sample: List[int],
-        x: Optional[Tensor] = None,
-        show_progress_bars: bool = True,
-        mcmc_method: Optional[str] = None,
-        mcmc_parameters: Optional[Dict[str, Any]] = None,
-    ) -> Tensor:
-        r"""
-        Return samples from conditional posterior $p(\theta_i|\theta_j, x)$.
-
-        In this function, we do not sample from the full posterior, but instead only
-        from a few parameter dimensions while the other parameter dimensions are kept
-        fixed at values specified in `condition`.
-
-        Samples are obtained with MCMC.
-
-        Args:
-            sample_shape: Desired shape of samples that are drawn from posterior. If
-                sample_shape is multidimensional we simply draw `sample_shape.numel()`
-                samples and then reshape into the desired shape.
-            condition: Parameter set that all dimensions not specified in
-                `dims_to_sample` will be fixed to. Should contain dim_theta elements,
-                i.e. it could e.g. be a sample from the posterior distribution.
-                The entries at all `dims_to_sample` will be ignored.
-            dims_to_sample: Which dimensions to sample from. The dimensions not
-                specified in `dims_to_sample` will be fixed to values given in
-                `condition`.
-            x: Conditioning context for posterior $p(\theta|x)$. If not provided,
-                fall back onto `x_o` if previously provided for multiround training, or
-                to a set default (see `set_default_x()` method).
-            show_progress_bars: Whether to show sampling progress monitor.
-            mcmc_method: Optional parameter to override `self.mcmc_method`.
-            mcmc_parameters: Dictionary overriding the default parameters for MCMC.
-                The following parameters are supported: `thin` to set the thinning
-                factor for the chain, `warmup_steps` to set the initial number of
-                samples to discard, `num_chains` for the number of chains,
-                `init_strategy` for the initialisation strategy for chains; `prior`
-                will draw init locations from prior, whereas `sir` will use Sequential-
-                Importance-Resampling using `init_strategy_num_candidates` to find init
-                locations.
-
-        Returns:
-            Samples from conditional posterior.
-        """
-
-        return super().sample_conditional(
-            PotentialFunctionProvider(),
-            sample_shape,
-            condition,
-            dims_to_sample,
-            x,
-            show_progress_bars,
-            mcmc_method,
-            mcmc_parameters,
-        )
+            return samples.reshape((*sample_shape, -1))
 
 
 class PotentialFunctionProvider:
     """
     This class is initialized without arguments during the initialization of the
-    Posterior class. When called, it specializes to the potential function appropriate
-    to the requested `mcmc_method`.
+    Posterior class. 
 
     NOTE: Why use a class?
     ----------------------
@@ -385,20 +292,23 @@ class PotentialFunctionProvider:
     (https://stackoverflow.com/a/12022055).
 
     It is important to NOT initialize attributes upon instantiation, because we need the
-     most current trained posterior neural net.
-
-    Returns:
-        Potential function for use by either numpy or pyro sampler
+    most current trained posterior neural net.
     """
 
     def __call__(
-        self, prior, posterior_nn: nn.Module, x: Tensor, mcmc_method: str,
+        self, prior, net: nn.Module, x: Tensor, 
     ) -> Callable:
         """Return potential function.
 
-        Switch on numpy or pyro potential function based on `mcmc_method`.
+        Args:
+            prior: Prior distribution that can be evaluated.
+            net: Neural posterior estimator that can be evaluated.
+            x: Conditioning variable for posterior $p(\theta|x)$.
+
+        Returns:
+            Potential function for sampler.
         """
-        self.posterior_nn = posterior_nn
+        self.posterior_nn = net
         self.prior = prior
         self.x = x
 
@@ -408,15 +318,17 @@ class PotentialFunctionProvider:
         r"""Return posterior log prob. of theta $p(\theta|x)$, -inf where outside prior.
 
         Args:
-            theta: Parameters $\theta$ (from pyro sampler).
+            theta: Parameters $\theta$.
 
         Returns:
             Posterior log probability $p(\theta|x)$, masked outside of prior.
         """
-
         theta = next(iter(theta.values()))
+ 
+        # Theta and x should have shape (batch, dim).
+        theta = ensure_theta_batched(theta)
+        x = ensure_x_batched(self.x)
 
-        # Notice opposite sign to numpy.
         log_prob_posterior = -self.posterior_nn.log_prob(inputs=theta, context=self.x)
         log_prob_prior = self.prior.log_prob(theta)
 
