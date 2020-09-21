@@ -28,7 +28,6 @@ class ZeusSliceEnsembleMCMC(MCMC):
         available_cpus: int = max(mp.cpu_count() - 1, 1),
         verbose: bool = True,
         site_name: str = "theta",
-        num_walkers: int = 100,
     ):
         super().__init__(
             potential_fn,
@@ -52,31 +51,29 @@ class ZeusSliceEnsembleMCMC(MCMC):
 
         self.site_name = site_name
 
-        self.num_walkers = num_walkers
-
     def run(self, num_samples: int) -> Dict[str, torch.Tensor]:
         assert num_samples >= 0
 
-        # TODO: start through init_fn
-        # TODO: ndim through init_fn
-        # TODO: move thin into sampler arg (remove elsewhere)
-        ndim = 2
-        start = 1.0 * np.random.randn(self.num_walkers, ndim)
-        nsteps = num_samples * self.thin + self.warmup * self.thin
+        with torch.set_grad_enabled(False):
 
-        vec = self.vectorize
-        vec = 1
-        sampler = zeus.sampler(self.num_walkers, ndim, self._log_prob_fn, vectorize=vec)
-        samples = sampler.run_mcmc(start, nsteps)
+            # TODO: start through init_fn
+            # TODO: ndim through init_fn
+            # TODO: move thin into sampler arg (remove elsewhere)
+            start = torch.cat([self.init_fn(self.site_name) for _ in range(self.num_chains)])
 
-        samples = sampler.get_chain()  # discard = warmup
+            nsteps = num_samples * self.thin + self.warmup * self.thin
 
-        # Init chain
-        # if self.x is None:
-        #    self.x = self._get_init_params()
-        #    self.n_dims = self.x.size  # TODO: double check
+            sampler = zeus.sampler(self.num_chains, start.shape[1], self._log_prob_fn, vectorize=self.vectorize)
+            samples = sampler.run_mcmc(start, nsteps)
 
-        return {self.site_name: torch.from_numpy(samples.astype(np.float32))}
+            samples = sampler.get_chain()  # discard = warmup
+
+            # Init chain
+            # if self.x is None:
+            #    self.x = self._get_init_params()
+            #    self.n_dims = self.x.size  # TODO: double check
+
+            return {self.site_name: torch.from_numpy(samples.astype(np.float32))}
 
     def _reset(self):
         self.rng = np.random

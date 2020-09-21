@@ -149,6 +149,9 @@ class PotentialFunctionProvider:
         theta = ensure_theta_batched(theta)
         x = ensure_x_batched(self.x)
 
+        num_batch = theta.shape[0]
+        x = x.repeat(num_batch, 1)
+
         log_likelihood = self.likelihood_nn.log_prob(
             inputs=x, context=theta
         )

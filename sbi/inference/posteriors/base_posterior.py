@@ -342,8 +342,8 @@ class NeuralPosterior(ABC):
             mcmc_class = mcmc.NumpySliceMCMC
         elif mcmc_method in ["pyro"]:
             mcmc_class = mcmc.PyroMCMC
-        elif mcmc_method in ["zeus"]:
-            mcmc_clas = mcmc.ZeusSliceEnsembleMCMC
+        elif mcmc_method in ["slice_zeus", "zeus"]:
+            mcmc_class = mcmc.ZeusSliceEnsembleMCMC
         else:
             raise NotImplementedError
 
