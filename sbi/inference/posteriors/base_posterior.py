@@ -22,6 +22,7 @@ from torch import nn
 
 from sbi import utils as utils
 from sbi.mcmc import Slice, SliceSampler, prior_init, sir
+from sbi.mcmc.slice_vectorized import SliceSamplerVectorized
 from sbi.types import Array, Shape
 from sbi.user_input.user_input_checks import process_x
 from sbi.utils.torchutils import (
@@ -312,10 +313,18 @@ class NeuralPosterior(ABC):
 
         initial_params = torch.cat([init_fn() for _ in range(num_chains)])
 
-        track_gradients = mcmc_method != "slice" and mcmc_method != "slice_np"
+        track_gradients = mcmc_method in ("hmc", "nuts")
         with torch.set_grad_enabled(track_gradients):
             if mcmc_method == "slice_np":
                 samples = self._slice_np_mcmc(
+                    num_samples=num_samples,
+                    potential_function=potential_fn,
+                    initial_params=initial_params,
+                    thin=thin,
+                    warmup_steps=warmup_steps,
+                )
+            elif mcmc_method == "slice_np_vec":
+                samples = self._slice_np_vec_mcmc(
                     num_samples=num_samples,
                     potential_function=potential_fn,
                     initial_params=initial_params,
@@ -375,6 +384,52 @@ class NeuralPosterior(ABC):
         all_samples = np.stack(all_samples).astype(np.float32)
 
         samples = torch.from_numpy(all_samples)  # chains x samples x dim
+
+        # Save sample as potential next init (if init_strategy == 'latest_sample').
+        self._mcmc_init_params = samples[:, -1, :].reshape(num_chains, dim_samples)
+
+        samples = samples.reshape(-1, dim_samples)[:num_samples, :]
+        assert samples.shape[0] == num_samples
+
+        return samples.type(torch.float32)
+
+    def _slice_np_vec_mcmc(
+        self,
+        num_samples: int,
+        potential_function: Callable,
+        initial_params: Tensor,
+        thin: int,
+        warmup_steps: int,
+    ) -> Tensor:
+        """
+        Custom implementation of slice sampling using Numpy.
+
+        Args:
+            num_samples: Desired number of samples.
+            potential_function: A callable **class**.
+            initial_params: Initial parameters for MCMC chain.
+            thin: Thinning (subsampling) factor.
+            warmup_steps: Initial number of samples to discard.
+
+        Returns: Tensor of shape (num_samples, shape_of_single_theta).
+        """
+        num_chains = initial_params.shape[0]
+        dim_samples = initial_params.shape[1]
+
+        posterior_sampler = SliceSamplerVectorized(
+            init_params=utils.tensor2numpy(initial_params),
+            log_prob_fn=potential_function,
+            num_chains=num_chains,
+        )
+
+        warmup_ = warmup_steps * thin
+        num_samples_ = int((num_samples * thin) / num_chains)
+        samples = posterior_sampler.run(warmup_ + num_samples_)
+
+        samples = samples[:, warmup_:, :]
+        samples = samples[:, ::thin, :]
+
+        samples = torch.from_numpy(samples)  # chains x samples x dim
 
         # Save sample as potential next init (if init_strategy == 'latest_sample').
         self._mcmc_init_params = samples[:, -1, :].reshape(num_chains, dim_samples)
@@ -549,7 +604,6 @@ class NeuralPosterior(ABC):
         prior: Any,
         potential_fn: Callable,
         init_strategy: str = "prior",
-        init_strategy_num_candidates: int = 10000,
         **kwargs,
     ) -> Callable:
         """
@@ -560,8 +614,7 @@ class NeuralPosterior(ABC):
             potential_fn: Potential function that the candidate samples are weighted
                 with.
             init_strategy: Specifies the initialization method. Either of
-                [`prior`|`sir`].
-            init_strategy_num_candidates: Number of candidate samples drawn.
+                [`prior`|`sir`|`latest_sample`].
             kwargs: Absorbs passed but unused arguments. E.g. in
                 `DirectPosterior.sample()` we pass `mcmc_parameters` which might
                 contain entries that are not used here.
@@ -572,7 +625,7 @@ class NeuralPosterior(ABC):
         if init_strategy == "prior":
             return lambda: prior_init(prior)
         elif init_strategy == "sir":
-            return lambda: sir(prior, potential_fn, init_strategy_num_candidates,)
+            return lambda: sir(prior, potential_fn)
         elif init_strategy == "latest_sample":
             return lambda: self._mcmc_init_params
         else:

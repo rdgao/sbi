@@ -153,7 +153,7 @@ class LikelihoodBasedPosterior(NeuralPosterior):
             potential_fn=potential_fn_provider(self._prior, self.net, x, mcmc_method),
             init_fn=self._build_mcmc_init_fn(
                 self._prior,
-                potential_fn_provider(self._prior, self.net, x, "slice_np"),
+                potential_fn_provider(self._prior, self.net, x, "slice_np_vec"),
                 **mcmc_parameters,
             ),
             mcmc_method=mcmc_method,
@@ -278,10 +278,12 @@ class PotentialFunctionProvider:
         Returns:
             Posterior log probability of the theta, $-\infty$ if impossible under prior.
         """
-        theta = torch.as_tensor(theta, dtype=torch.float32)
-        log_likelihood = self.likelihood_nn.log_prob(
-            inputs=self.x.reshape(1, -1), context=theta.reshape(1, -1)
-        )
+        theta = torch.as_tensor(np.atleast_2d(theta), dtype=torch.float32)
+
+        num_batch = theta.shape[0]
+        x = np.repeat(self.x.reshape(1, -1), num_batch, axis=0)
+
+        log_likelihood = self.likelihood_nn.log_prob(inputs=x, context=theta)
 
         # Notice opposite sign to pyro potential.
         return log_likelihood + self.prior.log_prob(theta)
