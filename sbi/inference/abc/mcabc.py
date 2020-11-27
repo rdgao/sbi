@@ -1,5 +1,10 @@
-
-from typing import Callable, Optional, Union, Dict, Any, Tuple, Union, cast, List, Sequence, TypeVar
+from typing import (
+    Callable,
+    Optional,
+    Union,
+    Tuple,
+    Union,
+)
 
 import torch
 from numpy import ndarray
@@ -62,7 +67,7 @@ class MCABC(ABCBASE):
         num_simulations: int,
         eps: Optional[float] = None,
         quantile: Optional[float] = None,
-        return_distances: bool = False,
+        return_summary: bool = False,
     ) -> Union[Distribution, Tuple[Distribution, Tensor]]:
         r"""Run MCABC.
 
@@ -74,8 +79,8 @@ class MCABC(ABCBASE):
             quantile: Upper quantile of smallest distances for which the corresponding
                 parameters are returned, e.g, q=0.01 will return the top 1%. Exactly
                 one of quantile or `eps` have to be passed.
-            return_distances: Whether to return the distances corresponding to the
-                selected parameters.
+            return_summary: Whether to return the distances and data corresponding to
+                the selected parameters.
         Returns:
             posterior: Empirical distribution based on selected parameters.
             distances: Tensor of distances of the selected parameters.
@@ -103,6 +108,7 @@ class MCABC(ABCBASE):
 
             theta_accepted = theta[is_accepted]
             distances_accepted = distances[is_accepted]
+            x_accepted = x[is_accepted]
 
         # Select based on quantile on sorted distances.
         elif quantile is not None:
@@ -110,13 +116,14 @@ class MCABC(ABCBASE):
             sort_idx = torch.argsort(distances)
             theta_accepted = theta[sort_idx][:num_top_samples]
             distances_accepted = distances[sort_idx][:num_top_samples]
+            x_accepted = x[sort_idx][:num_top_samples]
 
         else:
             raise ValueError("One of epsilon or quantile has to be passed.")
 
         posterior = Empirical(theta_accepted, log_weights=ones(theta_accepted.shape[0]))
 
-        if return_distances:
-            return posterior, distances_accepted
+        if return_summary:
+            return posterior, distances_accepted, x_accepted
         else:
             return posterior
