@@ -471,13 +471,11 @@ class SMCABC(ABCBASE):
             # For variant C, Beaumont et al. 2009, the kernel variance comes from the
             # previous population.
             if self.algorithm_variant == "C":
-                mean = torch.mean(samples, dim=0).unsqueeze(0)
-
-                # take double the weighted sample cov as proposed in Beaumont 2009
-                population_cov = torch.matmul(samples.T, samples) / (
-                    num_samples - 1
-                ) - torch.matmul(mean.T, mean)
-                return kernel_variance_scale * population_cov
+                # Calculate weighted covariance of particles.
+                population_cov = np.cov(particles, rowvar=False, aweights=weights)
+                return kernel_variance_scale * torch.tensor(
+                    population_cov, dtype=torch.float32
+                )
             # While for Toni et al. and Sisson et al. it comes from the parameter
             # ranges.
             elif self.algorithm_variant in ("A", "B"):
