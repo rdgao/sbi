@@ -483,10 +483,16 @@ class SMCABC(ABCBASE):
             # previous population.
             if self.algorithm_variant == "C":
                 # Calculate weighted covariance of particles.
-                population_cov = np.cov(particles, rowvar=False, aweights=weights)
-                return kernel_variance_scale * torch.tensor(
-                    population_cov, dtype=torch.float32
+                population_cov = torch.tensor(
+                    np.cov(particles, rowvar=False, aweights=weights),
+                    dtype=torch.float32,
                 )
+                # Make sure variance is not singular.
+                try:
+                    torch.cholesky(population_cov)
+                except RuntimeError:
+                    population_cov = torch.eye(particles.shape[1])
+                return kernel_variance_scale * population_cov
             # While for Toni et al. and Sisson et al. it comes from the parameter
             # ranges.
             elif self.algorithm_variant in ("A", "B"):
