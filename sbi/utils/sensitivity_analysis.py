@@ -1,5 +1,6 @@
 from copy import deepcopy
-from typing import Callable, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Tuple, Union
+from warnings import warn
 
 import torch
 from pyknos.nflows.nn import nets
@@ -18,15 +19,19 @@ def build_input_layer(
     embedding_net_theta: nn.Module = nn.Identity(),
 ) -> nn.Module:
     r"""Builds input layer for the `RestrictionEstimator` that optionally z-scores.
+
     The classifier used in the `RestrictionEstimator` will receive batches of $\theta$s.
+
     Args:
         batch_theta: Batch of $\theta$s, used to infer dimensionality and (optional)
             z-scoring.
         z_score_theta: Whether to z-score $\theta$s passing into the network.
         embedding_net_theta: Optional embedding network for $\theta$s.
+
     Returns:
         Input layer that optionally z-scores.
     """
+
     if z_score_theta:
         input_layer = nn.Sequential(standardizing_net(batch_theta), embedding_net_theta)
     else:
@@ -36,7 +41,14 @@ def build_input_layer(
 
 
 class Sensitivity:
-    def __init__(self, posterior):
+    def __init__(self, posterior: Any):
+        """
+        Args:
+            posterior: Posterior distribution obtained with `SNPE`, `SNLE`, or `SNRE`.
+                Needs to have a `.sample()` method. If we want to analyse the
+                sensitivity of the posterior probability, it also must have a
+                `.log_prob()` method.
+        """
         self._posterior = posterior
         self._regression_net = None
         self._theta = None
@@ -53,6 +65,38 @@ class Sensitivity:
         z_score: bool = True,
         embedding_net: nn.Module = nn.Identity(),
     ):
+        r"""
+        Add a property whose sensitivity is to be analysed.
+
+        To analyse the sensitivity of an emergent property, we train a neural network
+        to predict the property from the parameter set $\theta$. The hyperparameters of
+        this neural network also have to be specified here.
+
+        Args:
+            theta: Parameter sets $\theta$ sampled from the posterior.
+            emergent_property: Tensor containing the values of the property given each
+                parameter set $\theta$.
+            model: Neural network used to distinguish valid from bad samples. If it is
+                a string, use a pre-configured network of the provided type (either
+                mlp or resnet). Alternatively, a function that builds a custom
+                neural network can be provided. The function will be called with the
+                first batch of parameters (theta,), which can thus be used for shape
+                inference and potentially for z-scoring. It needs to return a PyTorch
+                `nn.Module` implementing the classifier.
+            hidden_features: Number of hidden units of the classifier if `model` is a
+                string.
+            num_blocks: Number of hidden layers of the classifier if `model` is a
+                string.
+            dropout_probability: Dropout probability of the classifier if `model` is
+                `resnet`.
+            z_score: Whether to z-score the parameters $\theta$ used to train the
+                classifier.
+            embedding_net: Neural network used to encode the parameters before they are
+                passed to the classifier.
+
+        Returns:
+
+        """
         self._theta = theta
         self._emergent_property = emergent_property
 
@@ -106,6 +150,25 @@ class Sensitivity:
         max_num_epochs: Optional[int] = None,
         clip_max_norm: Optional[float] = 5.0,
     ):
+        r"""
+        Train a regression network to predict the specified property from $\theta$.
+
+        Args:
+            training_batch_size: Training batch size.
+            learning_rate: Learning rate for Adam optimizer.
+            validation_fraction: The fraction of data to use for validation.
+            stop_after_epochs: The number of epochs to wait for improvement on the
+                validation set before terminating training.
+            max_num_epochs: Maximum number of epochs to run. If reached, we stop
+                training even when the validation loss is still decreasing. If None, we
+                train until validation loss increases (see also `stop_after_epochs`).
+            clip_max_norm: Value at which to clip the total gradient norm in order to
+                prevent exploding gradients. Use None for no clipping.
+                good_bad_criterion: Should take in the simulation output $x$ and output
+                whether $x$ is counted as `valid` simulation (output 1.0) or as a `bad`
+                simulation output 0.0). By default, the function checks whether $x$
+                contains at least one `nan` or `inf`.
+        """
 
         # Get indices for permutation of the data.
         num_examples = len(self._theta)
@@ -215,6 +278,13 @@ class Sensitivity:
         The directions of sensitivity are the directions along which a specific
         property changes in the fastest way.
 
+        This computes:
+        $M = E_p(\theta|x)[\nabla f(\theta)^T \nabla f(\theta)]$
+        where f(\cdot) is the trained regression network. The expected value is
+        approximated with a Monte-Carlo mean. Next, do an eigenvalue
+        decomposition of the matrix $M$:
+        $M = Q \Lambda Q^{-1}$
+
         Args:
             posterior_log_prob_as_property: Whether to use the posterior
                 log-probability the key property whose sensitivity is analysed. If
@@ -240,6 +310,12 @@ class Sensitivity:
                 "posterior distribution (i.e. you want to analyse the "
                 "sensitivity of the posterior probability), use:"
                 "`.find_active(posterior_log_prob_as_property=True)`."
+            )
+        if self._emergent_property is not None and posterior_log_prob_as_property:
+            warn(
+                "You specified a property with `.add_property()`, but also set "
+                "`posterior_log_prob_as_property=True`. The specified property will "
+                "be ignored."
             )
 
         thetas = self._posterior.sample((num_monte_carlo_samples,))
