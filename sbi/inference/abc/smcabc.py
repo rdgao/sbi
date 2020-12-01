@@ -491,6 +491,9 @@ class SMCABC(ABCBASE):
                 try:
                     torch.cholesky(population_cov)
                 except RuntimeError:
+                    self.logger.warning(
+                        "Sample particale cov singular, using unit variance."
+                    )
                     population_cov = torch.eye(particles.shape[1])
                 return kernel_variance_scale * population_cov
             # While for Toni et al. and Sisson et al. it comes from the parameter
