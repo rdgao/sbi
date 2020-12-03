@@ -40,7 +40,7 @@ def build_input_layer(
     return input_layer
 
 
-class Sensitivity:
+class ActiveSubspace:
     def __init__(self, posterior: Any):
         """
         Args:
@@ -53,6 +53,7 @@ class Sensitivity:
         self._regression_net = None
         self._theta = None
         self._emergent_property = None
+        self._validation_log_probs = None
 
     def add_property(
         self,
@@ -64,7 +65,7 @@ class Sensitivity:
         dropout_probability: float = 0.5,
         z_score: bool = True,
         embedding_net: nn.Module = nn.Identity(),
-    ):
+    ) -> "ActiveSubspace":
         r"""
         Add a property whose sensitivity is to be analysed.
 
@@ -95,8 +96,13 @@ class Sensitivity:
                 passed to the classifier.
 
         Returns:
-
+            `ActiveSubspace` to make the call chainable.
         """
+        assert emergent_property.shape == (
+            theta.shape[0],
+            1,
+        ), "The `emergent_property` must have shape (N, 1)."
+
         self._theta = theta
         self._emergent_property = emergent_property
 
@@ -141,6 +147,8 @@ class Sensitivity:
 
         self._build_nn = build_nn
 
+        return self
+
     def train(
         self,
         training_batch_size: int = 50,
@@ -149,7 +157,7 @@ class Sensitivity:
         stop_after_epochs: int = 20,
         max_num_epochs: Optional[int] = None,
         clip_max_norm: Optional[float] = 5.0,
-    ):
+    ) -> nn.Module:
         r"""
         Train a regression network to predict the specified property from $\theta$.
 
@@ -198,10 +206,12 @@ class Sensitivity:
             sampler=SubsetRandomSampler(val_indices),
         )
 
-        if self._classifier is None:
-            self._classifier = self._build_nn(self._theta[train_indices])
+        if self._regression_net is None:
+            self._regression_net = self._build_nn(self._theta[train_indices])
 
-        optimizer = optim.Adam(list(self._classifier.parameters()), lr=learning_rate,)
+        optimizer = optim.Adam(
+            list(self._regression_net.parameters()), lr=learning_rate,
+        )
         max_num_epochs = 2 ** 31 - 1 if max_num_epochs is None else max_num_epochs
 
         # criterion / loss
@@ -209,34 +219,35 @@ class Sensitivity:
 
         epoch, self._val_log_prob = 0, float("-Inf")
         while epoch <= max_num_epochs and not self._converged(epoch, stop_after_epochs):
-            self._classifier.train()
+            self._regression_net.train()
             for parameters, observations in train_loader:
                 optimizer.zero_grad()
-                outputs = self._classifier(parameters)
+                outputs = self._regression_net(parameters)
                 loss = criterion(outputs, observations)
                 loss.backward()
                 if clip_max_norm is not None:
                     clip_grad_norm_(
-                        self._classifier.parameters(), max_norm=clip_max_norm,
+                        self._regression_net.parameters(), max_norm=clip_max_norm,
                     )
                 optimizer.step()
 
             epoch += 1
 
             # calculate validation performance
-            self._classifier.eval()
+            self._regression_net.eval()
 
             val_loss = 0.0
             with torch.no_grad():
                 for parameters, observations in val_loader:
-                    outputs = self._classifier(parameters)
+                    outputs = self._regression_net(parameters)
                     loss = criterion(outputs, observations)
                     val_loss += loss.item()
             self._val_log_prob = -val_loss / num_validation_examples
+            self._validation_log_probs.append(self._val_log_prob)
 
             print("Training neural network. Epochs trained: ", epoch, end="\r")
 
-        return deepcopy(self._classifier)
+        return deepcopy(self._regression_net)
 
     def _converged(self, epoch: int, stop_after_epochs: int) -> bool:
         r"""
@@ -250,7 +261,7 @@ class Sensitivity:
         """
         converged = False
 
-        posterior_nn = self._classifier
+        posterior_nn = self._regression_net
 
         # (Re)-start the epoch count with the first epoch or any improvement.
         if epoch == 0 or self._val_log_prob > self._best_val_log_prob:
@@ -295,10 +306,8 @@ class Sensitivity:
                 based on. A larger value will make the results more accurate while
                 requiring more compute time.
 
-        Returns: Eigenvectors and corresponding eigenvalues. They are sorted from
-            largest to smallest eigenvalue. If multiple emergent properties were
-            specified, this will return a list where the n-th entry corresponds to the
-            eigenvectors and values of the n-th property.
+        Returns: Eigenvectors and corresponding eigenvalues. They are sorted in
+            ascending order.
         """
 
         if self._emergent_property is None and not posterior_log_prob_as_property:
@@ -308,7 +317,7 @@ class Sensitivity:
                 "`.add_emergent_property().train()` to do so. If you want "
                 "to use all features that had also been used to infer the "
                 "posterior distribution (i.e. you want to analyse the "
-                "sensitivity of the posterior probability), use:"
+                "sensitivity of the posterior probability), use: "
                 "`.find_active(posterior_log_prob_as_property=True)`."
             )
         if self._emergent_property is not None and posterior_log_prob_as_property:
@@ -321,8 +330,12 @@ class Sensitivity:
         thetas = self._posterior.sample((num_monte_carlo_samples,))
 
         thetas.requires_grad = True
-        predictions = self._regression_net.forward(thetas)
-        loss = predictions.mean(dim=1)
+
+        if posterior_log_prob_as_property:
+            predictions = self._posterior.log_prob(thetas, track_gradients=True)
+        else:
+            predictions = self._regression_net.forward(thetas)
+        loss = predictions.mean()
         loss.backward()
         gradient_input = torch.squeeze(thetas.grad)
         outer_products = torch.einsum("bi,bj->bij", (gradient_input, gradient_input))
