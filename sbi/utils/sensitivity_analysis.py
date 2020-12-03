@@ -281,6 +281,7 @@ class ActiveSubspace:
     def find_active(
         self,
         posterior_log_prob_as_property: bool = False,
+        norm_gradients_to_prior: bool = True,
         num_monte_carlo_samples: int = 1000,
     ) -> Tuple[Tensor, Tensor]:
         """
@@ -302,6 +303,10 @@ class ActiveSubspace:
                 `False`, one must have specified an emergent property and trained a
                 regression network using `.add_property().train()`. If `True`,
                 any previously specified property is ignored.
+            norm_gradients_to_prior: Whether to normalize each entry of the gradient
+                by the standard deviation of the prior in each dimension. If set to
+                `False`, the directions with the strongest eigenvalues might correspond
+                to directions in which the prior is broad.
             num_monte_carlo_samples: Number of Monte Carlo samples that the average is
                 based on. A larger value will make the results more accurate while
                 requiring more compute time.
@@ -337,8 +342,14 @@ class ActiveSubspace:
             predictions = self._regression_net.forward(thetas)
         loss = predictions.mean()
         loss.backward()
-        gradient_input = torch.squeeze(thetas.grad)
-        outer_products = torch.einsum("bi,bj->bij", (gradient_input, gradient_input))
+        gradients = torch.squeeze(thetas.grad)
+        if norm_gradients_to_prior:
+            if hasattr(self._posterior._prior, "stddev"):
+                prior_scale = self._posterior._prior.stddev
+            else:
+                prior_scale = torch.std(self._posterior._prior.sample((10000,)))
+            gradients *= prior_scale
+        outer_products = torch.einsum("bi,bj->bij", (gradients, gradients))
         average_outer_product = outer_products.mean(dim=0)
 
         eigen_values, eigen_vectors = torch.symeig(
