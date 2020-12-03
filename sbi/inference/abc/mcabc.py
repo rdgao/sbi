@@ -67,7 +67,8 @@ class MCABC(ABCBASE):
         num_simulations: int,
         eps: Optional[float] = None,
         quantile: Optional[float] = None,
-        return_summary: bool = False,
+        return_distances: bool = False,
+        return_x_accepted: bool = False,
     ) -> Union[Distribution, Tuple[Distribution, Tensor]]:
         r"""Run MCABC.
 
@@ -79,8 +80,11 @@ class MCABC(ABCBASE):
             quantile: Upper quantile of smallest distances for which the corresponding
                 parameters are returned, e.g, q=0.01 will return the top 1%. Exactly
                 one of quantile or `eps` have to be passed.
-            return_summary: Whether to return the distances and data corresponding to
-                the selected parameters.
+            return_distances: Whether to return the distances corresponding to
+                the accepted parameters.
+            return_distances: Whether to return the simulated data corresponding to
+                the accepted parameters.
+
         Returns:
             posterior: Empirical distribution based on selected parameters.
             distances: Tensor of distances of the selected parameters.
@@ -123,7 +127,11 @@ class MCABC(ABCBASE):
 
         posterior = Empirical(theta_accepted, log_weights=ones(theta_accepted.shape[0]))
 
-        if return_summary:
+        if return_distances and return_x_accepted:
             return posterior, distances_accepted, x_accepted
+        if return_distances:
+            return posterior, distances_accepted
+        if return_x_accepted:
+            return posterior, x_accepted
         else:
             return posterior

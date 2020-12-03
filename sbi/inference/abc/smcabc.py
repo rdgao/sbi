@@ -3,14 +3,7 @@ from typing import (
     Callable,
     Optional,
     Union,
-    Dict,
-    Any,
     Tuple,
-    Union,
-    cast,
-    List,
-    Sequence,
-    TypeVar,
 )
 
 import torch
@@ -194,7 +187,7 @@ class SMCABC(ABCBASE):
                 log_weights=all_log_weights[pop_idx - 1],
                 distances=all_distances[pop_idx - 1],
                 epsilon=epsilon,
-                x=x,
+                x=all_x[pop_idx - 1],
                 use_last_pop_samples=use_last_pop_samples,
             )
 
