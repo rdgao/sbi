@@ -10,23 +10,73 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils import data
 from torch.utils.data.sampler import SubsetRandomSampler
 
-from sbi.utils.sbiutils import standardizing_net
+from sbi.utils.sbiutils import standardizing_net, handle_invalid_x
 
 
-def build_input_layer(
+class Destandardize(nn.Module):
+    def __init__(self, mean: Union[Tensor, float], std: Union[Tensor, float]):
+        super(Destandardize, self).__init__()
+        mean, std = map(torch.as_tensor, (mean, std))
+        self.mean = mean
+        self.std = std
+        self.register_buffer("_mean", mean)
+        self.register_buffer("_std", std)
+
+    def forward(self, tensor):
+        return tensor * self.std + self.mean
+
+
+def destandardizing_net(batch_t: Tensor, min_std: float = 1e-7) -> nn.Module:
+    """Net that de-standardizes the output so the NN can learn the standardized target.
+
+    Args:
+        batch_t: Batched tensor from which mean and std deviation (across
+            first dimension) are computed.
+        min_std:  Minimum value of the standard deviation to use when z-scoring to
+            avoid division by zero.
+
+    Returns:
+        Neural network module for z-scoring
+    """
+
+    is_valid_t, *_ = handle_invalid_x(batch_t, True)
+
+    t_mean = torch.mean(batch_t[is_valid_t], dim=0)
+    if len(batch_t > 1):
+        t_std = torch.std(batch_t[is_valid_t], dim=0)
+        t_std[t_std < min_std] = min_std
+    else:
+        t_std = 1
+        logging.warning(
+            f"""Using a one-dimensional batch will instantiate a Standardize transform 
+            with (mean, std) parameters which are not representative of the data. We allow
+            this behavior because you might be loading a pre-trained. If this is not the case, 
+            please be sure to use a larger batch."""
+        )
+
+    return Destandardize(t_mean, t_std)
+
+
+def build_input_output_layer(
     batch_theta: Tensor = None,
+    batch_property: Tensor = None,
     z_score_theta: bool = True,
+    z_score_property: bool = True,
     embedding_net_theta: nn.Module = nn.Identity(),
 ) -> nn.Module:
-    r"""Builds input layer for the `RestrictionEstimator` that optionally z-scores.
+    r"""Builds input layer for the `ActiveSubspace` that optionally z-scores.
 
-    The classifier used in the `RestrictionEstimator` will receive batches of $\theta$s.
+    The regression network used in the `ActiveSubspace` will receive batches of $\theta$s and properties.
 
     Args:
         batch_theta: Batch of $\theta$s, used to infer dimensionality and (optional)
             z-scoring.
+        batch_property: Batch of properties, used for (optional) z-scoring.
         z_score_theta: Whether to z-score $\theta$s passing into the network.
+        z_score_property: Whether to z-score properties passing into the network.
         embedding_net_theta: Optional embedding network for $\theta$s.
+        unnormalize: Whether the layer should normalize the inputs (`False`) or
+            un-normalize them (`True`).
 
     Returns:
         Input layer that optionally z-scores.
@@ -37,7 +87,12 @@ def build_input_layer(
     else:
         input_layer = embedding_net_theta
 
-    return input_layer
+    if z_score_property:
+        output_layer = destandardizing_net(batch_property)
+    else:
+        output_layer = nn.Identity()
+
+    return input_layer, output_layer
 
 
 class ActiveSubspace:
@@ -53,7 +108,7 @@ class ActiveSubspace:
         self._regression_net = None
         self._theta = None
         self._emergent_property = None
-        self._validation_log_probs = None
+        self._validation_log_probs = []
 
     def add_property(
         self,
@@ -63,7 +118,8 @@ class ActiveSubspace:
         hidden_features: int = 100,
         num_blocks: int = 2,
         dropout_probability: float = 0.5,
-        z_score: bool = True,
+        z_score_theta: bool = True,
+        z_score_property: bool = True,
         embedding_net: nn.Module = nn.Identity(),
     ) -> "ActiveSubspace":
         r"""
@@ -90,7 +146,9 @@ class ActiveSubspace:
                 string.
             dropout_probability: Dropout probability of the classifier if `model` is
                 `resnet`.
-            z_score: Whether to z-score the parameters $\theta$ used to train the
+            z_score_theta: Whether to z-score the parameters $\theta$ used to train the
+                classifier.
+            z_score_property: Whether to z-score the property used to train the
                 classifier.
             embedding_net: Neural network used to encode the parameters before they are
                 passed to the classifier.
@@ -112,7 +170,7 @@ class ActiveSubspace:
                 def build_nn(theta):
                     classifier = nets.ResidualNet(
                         in_features=theta.shape[1],
-                        out_features=2,
+                        out_features=1,
                         hidden_features=hidden_features,
                         context_features=None,
                         num_blocks=num_blocks,
@@ -120,8 +178,14 @@ class ActiveSubspace:
                         dropout_probability=dropout_probability,
                         use_batch_norm=True,
                     )
-                    input_layer = build_input_layer(theta, z_score, embedding_net)
-                    classifier = nn.Sequential(input_layer, classifier)
+                    input_layer, output_layer = build_input_output_layer(
+                        theta,
+                        emergent_property,
+                        z_score_theta,
+                        z_score_property,
+                        embedding_net,
+                    )
+                    classifier = nn.Sequential(input_layer, classifier, output_layer)
                     return classifier
 
             elif model == "mlp":
@@ -134,10 +198,16 @@ class ActiveSubspace:
                         nn.Linear(hidden_features, hidden_features),
                         nn.BatchNorm1d(hidden_features),
                         nn.ReLU(),
-                        nn.Linear(hidden_features, 2),
+                        nn.Linear(hidden_features, 1),
                     )
-                    input_layer = build_input_layer(theta, z_score, embedding_net)
-                    classifier = nn.Sequential(input_layer, classifier)
+                    input_layer, output_layer = build_input_output_layer(
+                        theta,
+                        emergent_property,
+                        z_score_theta,
+                        z_score_property,
+                        embedding_net,
+                    )
+                    classifier = nn.Sequential(input_layer, classifier, output_layer)
                     return classifier
 
             else:
@@ -210,7 +280,8 @@ class ActiveSubspace:
             self._regression_net = self._build_nn(self._theta[train_indices])
 
         optimizer = optim.Adam(
-            list(self._regression_net.parameters()), lr=learning_rate,
+            list(self._regression_net.parameters()),
+            lr=learning_rate,
         )
         max_num_epochs = 2 ** 31 - 1 if max_num_epochs is None else max_num_epochs
 
@@ -227,7 +298,8 @@ class ActiveSubspace:
                 loss.backward()
                 if clip_max_norm is not None:
                     clip_grad_norm_(
-                        self._regression_net.parameters(), max_norm=clip_max_norm,
+                        self._regression_net.parameters(),
+                        max_norm=clip_max_norm,
                     )
                 optimizer.step()
 
