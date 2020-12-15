@@ -387,6 +387,8 @@ class ActiveSubspace:
             ascending order.
         """
 
+        self._gradients_are_normed = norm_gradients_to_prior
+
         if self._emergent_property is None and not posterior_log_prob_as_property:
             raise ValueError(
                 "You have not yet passed an emergent property whose "
@@ -416,11 +418,16 @@ class ActiveSubspace:
         loss.backward()
         gradients = torch.squeeze(thetas.grad)
         if norm_gradients_to_prior:
-            if hasattr(self._posterior._prior, "stddev"):
-                prior_scale = self._posterior._prior.stddev
+            if hasattr(self._posterior._prior, "stddev") and hasattr(
+                self._posterior._prior, "mean"
+            ):
+                self._prior_mean = self._posterior._prior.mean
+                self._prior_scale = self._posterior._prior.stddev
             else:
-                prior_scale = torch.std(self._posterior._prior.sample((10000,)))
-            gradients *= prior_scale
+                prior_samples = self._posterior._prior.sample((10000,))
+                self._prior_scale = torch.std(prior_samples, dim=0)
+                self._prior_mean = torch.mean(prior_samples, dim=0)
+            gradients *= self._prior_scale
         outer_products = torch.einsum("bi,bj->bij", (gradients, gradients))
         average_outer_product = outer_products.mean(dim=0)
 
@@ -428,4 +435,25 @@ class ActiveSubspace:
             average_outer_product, eigenvectors=True
         )
 
+        self._eigen_vectors = eigen_vectors
+
         return eigen_values, eigen_vectors
+
+    def project(self, theta: Tensor, num_dimensions: int) -> Tensor:
+        r"""
+        Return $theta$ that were projected into the subspace.
+
+        Args:
+            theta: Parameter sets to be projected.
+            num_dimensions: Dimensionality of the subspace into which to project.
+
+        Returns:
+            Projected parameters of shape (theta.shape[0], num_dimensions).
+        """
+        if self._gradients_are_normed:
+            theta = (theta - self._prior_mean) / self._prior_scale
+
+        projection_mat = self._eigen_vectors[:, -num_dimensions:]
+        projected_theta = torch.mm(theta, projection_mat)
+
+        return projected_theta
