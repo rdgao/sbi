@@ -384,7 +384,8 @@ class ActiveSubspace:
                 requiring more compute time.
 
         Returns: Eigenvectors and corresponding eigenvalues. They are sorted in
-            ascending order.
+            ascending order. Note that the column `eigenvectors[:, j]` is the
+            eigenvector corresponding to the `j`-th eigenvalue.
         """
 
         self._gradients_are_normed = norm_gradients_to_prior
