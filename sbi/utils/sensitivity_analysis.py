@@ -443,6 +443,10 @@ class ActiveSubspace:
         r"""
         Return $theta$ that were projected into the subspace.
 
+        Performs a linear projection. Also takes care of normalizing the data. The mean
+        and standard deviation used for normalizing are the same as used to compute the
+        eigenvectors and eigenvalues (mean and std of prior).
+
         Args:
             theta: Parameter sets to be projected.
             num_dimensions: Dimensionality of the subspace into which to project.
